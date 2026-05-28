@@ -1,10 +1,39 @@
 CREATE TABLE IF NOT EXISTS records (
   record_id         CHAR(64) PRIMARY KEY,
   patient_pseudonym VARCHAR(56) NOT NULL,
+  subject           VARCHAR(56) NOT NULL,
+  author            VARCHAR(56) NOT NULL,
   tier              VARCHAR(32) NOT NULL,
   record_type       VARCHAR(64),
   commitment        CHAR(64),
   storage_ref       TEXT,
+  write_grant_id    CHAR(64),
+  created_at        BIGINT,
+  raw_event         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ledger_sequence   BIGINT NOT NULL,
+  event_timestamp   TIMESTAMPTZ,
+  indexed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE records ADD COLUMN IF NOT EXISTS subject VARCHAR(56);
+ALTER TABLE records ADD COLUMN IF NOT EXISTS author VARCHAR(56);
+ALTER TABLE records ADD COLUMN IF NOT EXISTS write_grant_id CHAR(64);
+ALTER TABLE records ADD COLUMN IF NOT EXISTS created_at BIGINT;
+UPDATE records
+SET subject = COALESCE(subject, patient_pseudonym),
+    author = COALESCE(author, patient_pseudonym)
+WHERE subject IS NULL OR author IS NULL;
+ALTER TABLE records ALTER COLUMN subject SET NOT NULL;
+ALTER TABLE records ALTER COLUMN author SET NOT NULL;
+
+CREATE TABLE IF NOT EXISTS write_grants (
+  grant_id          CHAR(64) PRIMARY KEY,
+  subject           VARCHAR(56) NOT NULL,
+  grantee           VARCHAR(56) NOT NULL,
+  scope_category    VARCHAR(64) NOT NULL,
+  expires_at        BIGINT NOT NULL,
+  revoked           BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at        BIGINT NOT NULL,
   raw_event         JSONB NOT NULL DEFAULT '{}'::jsonb,
   ledger_sequence   BIGINT NOT NULL,
   event_timestamp   TIMESTAMPTZ,
@@ -111,6 +140,9 @@ CREATE INDEX IF NOT EXISTS idx_grants_record_id ON grants(record_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_patient_pseudonym ON audit_events(patient_pseudonym);
 
 CREATE INDEX IF NOT EXISTS idx_records_patient_pseudonym ON records(patient_pseudonym);
+CREATE INDEX IF NOT EXISTS idx_records_subject_created_at ON records(subject, created_at);
+CREATE INDEX IF NOT EXISTS idx_write_grants_subject ON write_grants(subject);
+CREATE INDEX IF NOT EXISTS idx_write_grants_grantee ON write_grants(grantee);
 CREATE INDEX IF NOT EXISTS idx_audit_events_grant_id ON audit_events(grant_id);
 CREATE INDEX IF NOT EXISTS idx_prescriptions_patient_pseudonym ON prescriptions(patient_pseudonym);
 CREATE INDEX IF NOT EXISTS idx_inventory_units_prescription_id ON inventory_units(prescription_id);

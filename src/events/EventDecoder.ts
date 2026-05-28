@@ -7,6 +7,9 @@ export const handledIndexerEventTypes = [
   "cred_issue",
   "cred_revoke",
   "rec_reg",
+  "rec_app",
+  "write_gr",
+  "wrgr_rv",
 ] as const;
 
 export type IndexerEventType = (typeof handledIndexerEventTypes)[number];
@@ -50,6 +53,9 @@ const eventShapes: readonly EventShape[] = [
   { eventType: "cred_issue", aliases: ["cred_issue"] },
   { eventType: "cred_revoke", aliases: ["cred_revoke", "cred_rev"] },
   { eventType: "rec_reg", aliases: ["rec_reg"] },
+  { eventType: "rec_app", aliases: ["rec_app"] },
+  { eventType: "write_gr", aliases: ["write_gr"] },
+  { eventType: "wrgr_rv", aliases: ["wrgr_rv"] },
 ];
 
 const eventTypeByAlias = new Map<string, IndexerEventType>(
@@ -182,11 +188,47 @@ function decodeFields(
     case "rec_reg":
       return {
         patientPseudonym: topics[1] ?? null,
+        subject: topics[1] ?? null,
+        author: topics[1] ?? null,
         recordId: fieldAt(values, 0),
         tier: tierName(numberAt(values, 1)),
         recordType: fieldAt(values, 2),
         storageRef: bytesText(values[3]),
         commitment: bytesText(values[4]),
+        createdAt: numberAt(values, 5),
+        writeGrantId: null,
+      };
+
+    case "rec_app":
+      return {
+        patientPseudonym: topics[1] ?? null,
+        subject: topics[1] ?? null,
+        author: topics[2] ?? null,
+        recordId: fieldAt(values, 0),
+        writeGrantId: fieldAt(values, 1),
+        tier: tierName(numberAt(values, 2)),
+        recordType: fieldAt(values, 3),
+        storageRef: bytesText(values[4]),
+        commitment: bytesText(values[5]),
+        createdAt: numberAt(values, 6),
+      };
+
+    case "write_gr":
+      return {
+        subject: topics[1] ?? null,
+        patientPseudonym: topics[1] ?? null,
+        grantee: topics[2] ?? null,
+        grantId: fieldAt(values, 0),
+        scopeCategory: fieldAt(values, 1),
+        expiresAt: numberAt(values, 2),
+        createdAt: numberAt(values, 3),
+      };
+
+    case "wrgr_rv":
+      return {
+        subject: topics[1] ?? null,
+        patientPseudonym: topics[1] ?? null,
+        grantId: fieldAt(values, 0) ?? readText(eventSingleton(values)),
       };
   }
 }
@@ -320,6 +362,8 @@ function grantTypeName(grantTypeCode: number | null): string {
       return "break_glass";
     case 3:
       return "offline_emergency";
+    case 4:
+      return "write";
     case 1:
     default:
       return "normal";

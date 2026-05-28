@@ -61,10 +61,27 @@ interface NotificationRow {
 interface RecordRow {
   record_id: string;
   patient_pseudonym: string;
+  subject: string;
+  author: string;
   tier: string;
   record_type: string | null;
   commitment: string | null;
   storage_ref: string | null;
+  write_grant_id: string | null;
+  created_at: string | null;
+  ledger_sequence: string;
+  event_timestamp: Date | null;
+  indexed_at: Date;
+}
+
+interface WriteGrantRow {
+  grant_id: string;
+  subject: string;
+  grantee: string;
+  scope_category: string;
+  expires_at: string;
+  revoked: boolean;
+  created_at: string;
   ledger_sequence: string;
   event_timestamp: Date | null;
   indexed_at: Date;
@@ -125,6 +142,18 @@ async function handleRequest(
   const grantId = readPathParam(url.pathname, "/v1/grants/");
   if (grantId) {
     return readGrantById(pool, grantId);
+  }
+  const writeGrantId = readPathParam(url.pathname, "/v1/write-grants/");
+  if (writeGrantId) {
+    return readWriteGrantById(pool, writeGrantId);
+  }
+  const historySubject = readPatientPathParam(url.pathname, "history");
+  if (historySubject) {
+    return readPatientHistory(pool, historySubject);
+  }
+  const writeGrantSubject = readPatientPathParam(url.pathname, "write-grants");
+  if (writeGrantSubject) {
+    return readPatientWriteGrants(pool, writeGrantSubject);
   }
 
   switch (url.pathname) {
@@ -369,10 +398,14 @@ async function readRecords(pool: pg.Pool, url: URL): Promise<JsonResponse> {
     `SELECT
       record_id,
       patient_pseudonym,
+      subject,
+      author,
       tier,
       record_type,
       commitment,
       storage_ref,
+      write_grant_id,
+      created_at::text,
       ledger_sequence::text,
       event_timestamp,
       indexed_at
@@ -385,17 +418,109 @@ async function readRecords(pool: pg.Pool, url: URL): Promise<JsonResponse> {
   return {
     status: 200,
     body: {
-      records: result.rows.map((row) => ({
-        recordId: row.record_id,
-        patientPseudonym: row.patient_pseudonym,
-        tier: row.tier,
-        recordType: row.record_type,
-        commitment: row.commitment,
-        storageRef: row.storage_ref,
-        ledgerSequence: row.ledger_sequence,
-        eventTimestamp: row.event_timestamp?.toISOString() ?? null,
-        indexedAt: row.indexed_at.toISOString(),
-      })),
+      records: result.rows.map(recordFromRow),
+    },
+  };
+}
+
+async function readPatientHistory(
+  pool: pg.Pool,
+  subject: string,
+): Promise<JsonResponse> {
+  const result = await pool.query<RecordRow>(
+    `SELECT
+      record_id,
+      patient_pseudonym,
+      subject,
+      author,
+      tier,
+      record_type,
+      commitment,
+      storage_ref,
+      write_grant_id,
+      created_at::text,
+      ledger_sequence::text,
+      event_timestamp,
+      indexed_at
+    FROM records
+    WHERE subject = $1
+    ORDER BY COALESCE(created_at, EXTRACT(EPOCH FROM indexed_at)::bigint) ASC,
+      indexed_at ASC,
+      record_id ASC`,
+    [subject],
+  );
+
+  return {
+    status: 200,
+    body: {
+      history: result.rows.map(recordFromRow),
+    },
+  };
+}
+
+async function readPatientWriteGrants(
+  pool: pg.Pool,
+  subject: string,
+): Promise<JsonResponse> {
+  const result = await pool.query<WriteGrantRow>(
+    `SELECT
+      grant_id,
+      subject,
+      grantee,
+      scope_category,
+      expires_at::text,
+      revoked,
+      created_at::text,
+      ledger_sequence::text,
+      event_timestamp,
+      indexed_at
+    FROM write_grants
+    WHERE subject = $1
+    ORDER BY revoked ASC, expires_at ASC, indexed_at DESC`,
+    [subject],
+  );
+
+  return {
+    status: 200,
+    body: {
+      writeGrants: result.rows.map(writeGrantFromRow),
+    },
+  };
+}
+
+async function readWriteGrantById(
+  pool: pg.Pool,
+  grantId: string,
+): Promise<JsonResponse> {
+  const result = await pool.query<WriteGrantRow>(
+    `SELECT
+      grant_id,
+      subject,
+      grantee,
+      scope_category,
+      expires_at::text,
+      revoked,
+      created_at::text,
+      ledger_sequence::text,
+      event_timestamp,
+      indexed_at
+    FROM write_grants
+    WHERE grant_id = $1`,
+    [grantId],
+  );
+  const row = result.rows[0];
+
+  if (!row) {
+    return {
+      status: 404,
+      body: { error: "not_found" },
+    };
+  }
+
+  return {
+    status: 200,
+    body: {
+      writeGrant: writeGrantFromRow(row),
     },
   };
 }
@@ -420,9 +545,25 @@ async function handleE2EFixture(
     return createE2EGrant(pool, await readJsonBody(request));
   }
 
+  if (url.pathname === "/__e2e/tier3/write-grants") {
+    return createE2EWriteGrant(pool, await readJsonBody(request));
+  }
+
+  if (url.pathname === "/__e2e/tier3/append-records") {
+    return createE2EAppendRecord(pool, await readJsonBody(request));
+  }
+
   const revokeGrantId = readPathParam(url.pathname, "/__e2e/tier3/grants/", "/revoke");
   if (revokeGrantId) {
     return revokeE2EGrant(pool, revokeGrantId);
+  }
+  const revokeWriteGrantId = readPathParam(
+    url.pathname,
+    "/__e2e/tier3/write-grants/",
+    "/revoke",
+  );
+  if (revokeWriteGrantId) {
+    return revokeE2EWriteGrant(pool, revokeWriteGrantId);
   }
 
   return {
@@ -455,21 +596,29 @@ async function createE2ERecord(
     `INSERT INTO records (
       record_id,
       patient_pseudonym,
+      subject,
+      author,
       tier,
       record_type,
       commitment,
       storage_ref,
+      write_grant_id,
+      created_at,
       raw_event,
       ledger_sequence,
       event_timestamp
     )
-    VALUES ($1, $2, 'full_clinical_history', $3, $4, $5, $6::jsonb, 0, NOW())
+    VALUES ($1, $2, $2, $2, 'full_clinical_history', $3, $4, $5, NULL, $6, $7::jsonb, 0, NOW())
     ON CONFLICT (record_id) DO UPDATE SET
       patient_pseudonym = EXCLUDED.patient_pseudonym,
+      subject = EXCLUDED.subject,
+      author = EXCLUDED.author,
       tier = EXCLUDED.tier,
       record_type = EXCLUDED.record_type,
       commitment = EXCLUDED.commitment,
       storage_ref = EXCLUDED.storage_ref,
+      write_grant_id = EXCLUDED.write_grant_id,
+      created_at = EXCLUDED.created_at,
       raw_event = EXCLUDED.raw_event,
       indexed_at = NOW()`,
     [
@@ -478,6 +627,7 @@ async function createE2ERecord(
       category,
       commitment,
       storageRef,
+      Math.floor(Date.now() / 1_000),
       JSON.stringify({ e2e: true, plaintextSha256: commitment }),
     ],
   );
@@ -594,6 +744,212 @@ async function revokeE2EGrant(
   };
 }
 
+async function createE2EWriteGrant(
+  pool: pg.Pool,
+  body: unknown,
+): Promise<JsonResponse> {
+  if (!isRecord(body)) {
+    return { status: 400, body: { error: "invalid_fixture_request" } };
+  }
+
+  const subject = readNonEmptyString(body.subject);
+  const grantee = readNonEmptyString(body.grantee);
+
+  if (!subject || !grantee) {
+    return { status: 400, body: { error: "subject_and_grantee_required" } };
+  }
+
+  const grantId = readHexString(body.grantId) ?? sha256Hex(randomHex());
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  const expiresAt =
+    readInteger(body.expiresAt) ??
+    nowSeconds + (readInteger(body.expiresInSeconds) ?? 300);
+  const scopeCategory = readNonEmptyString(body.scopeCategory) ?? "note";
+
+  await pool.query(
+    `INSERT INTO write_grants (
+      grant_id,
+      subject,
+      grantee,
+      scope_category,
+      expires_at,
+      revoked,
+      created_at,
+      raw_event,
+      ledger_sequence,
+      event_timestamp
+    )
+    VALUES ($1, $2, $3, $4, $5, FALSE, $6, $7::jsonb, 0, NOW())
+    ON CONFLICT (grant_id) DO UPDATE SET
+      subject = EXCLUDED.subject,
+      grantee = EXCLUDED.grantee,
+      scope_category = EXCLUDED.scope_category,
+      expires_at = EXCLUDED.expires_at,
+      revoked = FALSE,
+      created_at = EXCLUDED.created_at,
+      raw_event = EXCLUDED.raw_event,
+      indexed_at = NOW()`,
+    [
+      grantId,
+      subject,
+      grantee,
+      scopeCategory,
+      expiresAt,
+      nowSeconds,
+      JSON.stringify({ e2e: true }),
+    ],
+  );
+
+  return {
+    status: 201,
+    body: (await readWriteGrantById(pool, grantId)).body,
+  };
+}
+
+async function revokeE2EWriteGrant(
+  pool: pg.Pool,
+  grantId: string,
+): Promise<JsonResponse> {
+  const result = await pool.query(
+    `UPDATE write_grants
+    SET revoked = TRUE,
+      raw_event = raw_event || $2::jsonb,
+      indexed_at = NOW()
+    WHERE grant_id = $1`,
+    [grantId, JSON.stringify({ e2eRevoked: true })],
+  );
+
+  if (result.rowCount === 0) {
+    return {
+      status: 404,
+      body: { error: "not_found" },
+    };
+  }
+
+  return {
+    status: 200,
+    body: (await readWriteGrantById(pool, grantId)).body,
+  };
+}
+
+async function createE2EAppendRecord(
+  pool: pg.Pool,
+  body: unknown,
+): Promise<JsonResponse> {
+  if (!isRecord(body)) {
+    return { status: 400, body: { error: "invalid_fixture_request" } };
+  }
+
+  const subject = readNonEmptyString(body.subject);
+  const author = readNonEmptyString(body.author);
+  const writeGrantId = readHexString(body.writeGrantId);
+
+  if (!subject || !author || !writeGrantId) {
+    return {
+      status: 400,
+      body: { error: "subject_author_and_write_grant_required" },
+    };
+  }
+
+  const grant = await pool.query<WriteGrantRow>(
+    `SELECT
+      grant_id,
+      subject,
+      grantee,
+      scope_category,
+      expires_at::text,
+      revoked,
+      created_at::text,
+      ledger_sequence::text,
+      event_timestamp,
+      indexed_at
+    FROM write_grants
+    WHERE grant_id = $1`,
+    [writeGrantId],
+  );
+  const writeGrant = grant.rows[0];
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  const category = readNonEmptyString(body.category) ?? "note";
+
+  if (!writeGrant || writeGrant.subject !== subject || writeGrant.grantee !== author) {
+    return { status: 403, body: { denied: true, reason: "NO_WRITE_GRANT" } };
+  }
+  if (writeGrant.revoked) {
+    return { status: 403, body: { denied: true, reason: "REVOKED" } };
+  }
+  if (Number(writeGrant.expires_at) <= nowSeconds) {
+    return { status: 403, body: { denied: true, reason: "EXPIRED" } };
+  }
+  if (writeGrant.scope_category !== category) {
+    return { status: 403, body: { denied: true, reason: "SCOPE_MISMATCH" } };
+  }
+
+  const plaintext = readNonEmptyString(body.plaintext) ?? "e2e-tier3-append";
+  const recordId = readHexString(body.recordId) ?? sha256Hex(randomHex());
+  const commitment = readHexString(body.commitment) ?? sha256Hex(plaintext);
+  const storageRef =
+    readNonEmptyString(body.storageRef) ?? `opaque://e2e/append/${recordId}`;
+
+  await pool.query(
+    `INSERT INTO records (
+      record_id,
+      patient_pseudonym,
+      subject,
+      author,
+      tier,
+      record_type,
+      commitment,
+      storage_ref,
+      write_grant_id,
+      created_at,
+      raw_event,
+      ledger_sequence,
+      event_timestamp
+    )
+    VALUES ($1, $2, $2, $3, 'full_clinical_history', $4, $5, $6, $7, $8, $9::jsonb, 0, NOW())
+    ON CONFLICT (record_id) DO UPDATE SET
+      patient_pseudonym = EXCLUDED.patient_pseudonym,
+      subject = EXCLUDED.subject,
+      author = EXCLUDED.author,
+      tier = EXCLUDED.tier,
+      record_type = EXCLUDED.record_type,
+      commitment = EXCLUDED.commitment,
+      storage_ref = EXCLUDED.storage_ref,
+      write_grant_id = EXCLUDED.write_grant_id,
+      created_at = EXCLUDED.created_at,
+      raw_event = EXCLUDED.raw_event,
+      indexed_at = NOW()`,
+    [
+      recordId,
+      subject,
+      author,
+      category,
+      commitment,
+      storageRef,
+      writeGrantId,
+      nowSeconds,
+      JSON.stringify({ e2e: true, append: true, plaintextSha256: commitment }),
+    ],
+  );
+
+  return {
+    status: 201,
+    body: {
+      record: {
+        recordId,
+        subject,
+        author,
+        tier: "full_clinical_history",
+        recordType: category,
+        commitment,
+        storageRef,
+        writeGrantId,
+        createdAt: String(nowSeconds),
+      },
+    },
+  };
+}
+
 function grantDetailsFromRow(row: GrantDetailsRow): unknown {
   return {
     grantId: row.grant_id,
@@ -621,6 +977,39 @@ function grantDetailsFromRow(row: GrantDetailsRow): unknown {
   };
 }
 
+function recordFromRow(row: RecordRow): unknown {
+  return {
+    recordId: row.record_id,
+    patientPseudonym: row.patient_pseudonym,
+    subject: row.subject,
+    author: row.author,
+    tier: row.tier,
+    recordType: row.record_type,
+    commitment: row.commitment,
+    storageRef: row.storage_ref,
+    writeGrantId: row.write_grant_id,
+    createdAt: row.created_at,
+    ledgerSequence: row.ledger_sequence,
+    eventTimestamp: row.event_timestamp?.toISOString() ?? null,
+    indexedAt: row.indexed_at.toISOString(),
+  };
+}
+
+function writeGrantFromRow(row: WriteGrantRow): unknown {
+  return {
+    grantId: row.grant_id,
+    subject: row.subject,
+    grantee: row.grantee,
+    scopeCategory: row.scope_category,
+    expiresAt: row.expires_at,
+    revoked: row.revoked,
+    createdAt: row.created_at,
+    ledgerSequence: row.ledger_sequence,
+    eventTimestamp: row.event_timestamp?.toISOString() ?? null,
+    indexedAt: row.indexed_at.toISOString(),
+  };
+}
+
 function readPatientQuery(url: URL): string | null {
   const patient = url.searchParams.get("patient")?.trim();
   return patient && patient.length > 0 ? patient : null;
@@ -636,6 +1025,19 @@ function readPathParam(
   }
 
   const end = suffix ? pathname.length - suffix.length : pathname.length;
+  const value = decodeURIComponent(pathname.slice(prefix.length, end));
+  return value.length > 0 ? value : null;
+}
+
+function readPatientPathParam(pathname: string, child: string): string | null {
+  const prefix = "/v1/patients/";
+  const suffix = `/${child}`;
+
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) {
+    return null;
+  }
+
+  const end = pathname.length - suffix.length;
   const value = decodeURIComponent(pathname.slice(prefix.length, end));
   return value.length > 0 ? value : null;
 }

@@ -92,6 +92,16 @@ export class EventStore {
       case "rec_reg":
         await this.upsertRecord(client, event);
         return;
+      case "rec_app":
+        await this.upsertRecord(client, event);
+        await this.insertAuditEvent(client, event);
+        return;
+      case "write_gr":
+        await this.upsertWriteGrant(client, event);
+        return;
+      case "wrgr_rv":
+        await this.revokeWriteGrant(client, event);
+        return;
     }
   }
 
@@ -122,21 +132,29 @@ export class EventStore {
       `INSERT INTO records (
         record_id,
         patient_pseudonym,
+        subject,
+        author,
         tier,
         record_type,
         commitment,
         storage_ref,
+        write_grant_id,
+        created_at,
         raw_event,
         ledger_sequence,
         event_timestamp
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
       ON CONFLICT (record_id) DO UPDATE SET
         patient_pseudonym = EXCLUDED.patient_pseudonym,
+        subject = EXCLUDED.subject,
+        author = EXCLUDED.author,
         tier = EXCLUDED.tier,
         record_type = EXCLUDED.record_type,
         commitment = EXCLUDED.commitment,
         storage_ref = EXCLUDED.storage_ref,
+        write_grant_id = EXCLUDED.write_grant_id,
+        created_at = EXCLUDED.created_at,
         raw_event = EXCLUDED.raw_event,
         ledger_sequence = EXCLUDED.ledger_sequence,
         event_timestamp = EXCLUDED.event_timestamp,
@@ -144,10 +162,18 @@ export class EventStore {
       [
         recordId,
         readStringField(event, "patientPseudonym") ?? "unknown",
+        readStringField(event, "subject") ??
+          readStringField(event, "patientPseudonym") ??
+          "unknown",
+        readStringField(event, "author") ??
+          readStringField(event, "patientPseudonym") ??
+          "unknown",
         readStringField(event, "tier") ?? "unknown",
         readStringField(event, "recordType"),
         readStringField(event, "commitment"),
         readStringField(event, "storageRef"),
+        readStringField(event, "writeGrantId"),
+        readNumberField(event, "createdAt"),
         JSON.stringify(event.rawEvent),
         event.ledgerSequence,
         event.eventTimestamp,
@@ -223,19 +249,108 @@ export class EventStore {
       `INSERT INTO records (
         record_id,
         patient_pseudonym,
+        subject,
+        author,
         tier,
         record_type,
         raw_event,
         ledger_sequence,
         event_timestamp
       )
-      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
       ON CONFLICT (record_id) DO NOTHING`,
       [
         recordId,
         readStringField(event, "patientPseudonym") ?? "unknown",
+        readStringField(event, "subject") ??
+          readStringField(event, "patientPseudonym") ??
+          "unknown",
+        readStringField(event, "author") ??
+          readStringField(event, "patientPseudonym") ??
+          "unknown",
         readStringField(event, "tier") ?? "unknown",
         "placeholder",
+        JSON.stringify(event.rawEvent),
+        event.ledgerSequence,
+        event.eventTimestamp,
+      ],
+    );
+  }
+
+  private async upsertWriteGrant(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+  ): Promise<void> {
+    const grantId = readStringField(event, "grantId");
+    const subject =
+      readStringField(event, "subject") ?? readStringField(event, "patientPseudonym");
+    const grantee = readStringField(event, "grantee");
+
+    if (!grantId || !subject || !grantee) {
+      await this.insertAuditEvent(client, event);
+      return;
+    }
+
+    await client.query(
+      `INSERT INTO write_grants (
+        grant_id,
+        subject,
+        grantee,
+        scope_category,
+        expires_at,
+        revoked,
+        created_at,
+        raw_event,
+        ledger_sequence,
+        event_timestamp
+      )
+      VALUES ($1, $2, $3, $4, $5, FALSE, $6, $7::jsonb, $8, $9)
+      ON CONFLICT (grant_id) DO UPDATE SET
+        subject = EXCLUDED.subject,
+        grantee = EXCLUDED.grantee,
+        scope_category = EXCLUDED.scope_category,
+        expires_at = EXCLUDED.expires_at,
+        revoked = FALSE,
+        created_at = EXCLUDED.created_at,
+        raw_event = EXCLUDED.raw_event,
+        ledger_sequence = EXCLUDED.ledger_sequence,
+        event_timestamp = EXCLUDED.event_timestamp,
+        indexed_at = NOW()`,
+      [
+        grantId,
+        subject,
+        grantee,
+        readStringField(event, "scopeCategory") ?? "unknown",
+        readNumberField(event, "expiresAt") ?? 0,
+        readNumberField(event, "createdAt") ?? event.ledgerSequence,
+        JSON.stringify(event.rawEvent),
+        event.ledgerSequence,
+        event.eventTimestamp,
+      ],
+    );
+  }
+
+  private async revokeWriteGrant(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+  ): Promise<void> {
+    const grantId = readStringField(event, "grantId");
+
+    if (!grantId) {
+      await this.insertAuditEvent(client, event);
+      return;
+    }
+
+    await client.query(
+      `UPDATE write_grants
+      SET revoked = TRUE,
+        raw_event = $2::jsonb,
+        ledger_sequence = $3,
+        event_timestamp = $4,
+        indexed_at = NOW()
+      WHERE grant_id = $1`,
+      [
+        grantId,
         JSON.stringify(event.rawEvent),
         event.ledgerSequence,
         event.eventTimestamp,
