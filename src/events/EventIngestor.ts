@@ -89,8 +89,8 @@ export class EventIngestor {
     store: EventStore,
     config: EventIngestorConfig,
   ) {
-    if (config.contractIds.length !== 4) {
-      throw new Error("EventIngestor requires exactly 4 contract IDs");
+    if (config.contractIds.length !== 5) {
+      throw new Error("EventIngestor requires exactly 5 contract IDs");
     }
 
     if (!Number.isInteger(config.pollIntervalMs) || config.pollIntervalMs <= 0) {
@@ -129,15 +129,7 @@ export class EventIngestor {
 
     try {
       const lastLedger = await this.#store.getLastLedger();
-      const response = await this.#client.getEvents({
-        startLedger: lastLedger + 1,
-        filters: [
-          {
-            type: "contract",
-            contractIds: this.#config.contractIds,
-          },
-        ],
-      });
+      const response = await this.getEventsFromNextLedger(lastLedger + 1);
       const lastObservedLedger = readLastObservedLedger(response.events);
       const decodedEvents = response.events
         .map((event) => decodeIndexerEvent(event))
@@ -162,6 +154,43 @@ export class EventIngestor {
           }
         });
     }, delayMs);
+  }
+
+  private async getEventsFromNextLedger(
+    startLedger: number,
+  ): Promise<GetEventsResponse> {
+    try {
+      return await this.#client.getEvents({
+        startLedger,
+        filters: [
+          {
+            type: "contract",
+            contractIds: this.#config.contractIds,
+          },
+        ],
+      });
+    } catch (error) {
+      const minimumLedger = readMinimumLedgerFromRangeError(error);
+
+      if (minimumLedger === null || startLedger >= minimumLedger) {
+        throw error;
+      }
+
+      await this.#store.ingestBatch([], minimumLedger - 1);
+      console.warn(
+        `Adjusted indexer start ledger from ${startLedger} to local RPC minimum ${minimumLedger}`,
+      );
+
+      return this.#client.getEvents({
+        startLedger: minimumLedger,
+        filters: [
+          {
+            type: "contract",
+            contractIds: this.#config.contractIds,
+          },
+        ],
+      });
+    }
   }
 }
 
@@ -195,6 +224,22 @@ function readLastObservedLedger(events: readonly StellarRpcEvent[]): number | nu
 
 function hasJsonRpcError(payload: unknown): payload is JsonRpcFailure {
   return isRecord(payload) && payload.error !== undefined;
+}
+
+function readMinimumLedgerFromRangeError(error: unknown): number | null {
+  if (!(error instanceof Error)) {
+    return null;
+  }
+
+  const match = /ledger range:\s*(\d+)\s*-/i.exec(error.message);
+  if (!match) {
+    return null;
+  }
+
+  const minimumLedger = Number(match[1]);
+  return Number.isInteger(minimumLedger) && minimumLedger > 0
+    ? minimumLedger
+    : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
