@@ -11,4 +11,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 
 ### Changed
+- E2E-2 api-indexer grant-state fixture API (#6)
 - IDX-3 — Veto-window notification workflow (#3)

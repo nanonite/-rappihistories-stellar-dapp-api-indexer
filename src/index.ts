@@ -26,6 +26,7 @@ export interface ApiIndexerConfig {
   };
   http: {
     port: number;
+    enableE2EFixtures: boolean;
   };
 }
 
@@ -66,6 +67,7 @@ export async function startApiIndexer(
   );
   const apiServer = startApiServer(pool, {
     port: config.http.port,
+    enableE2EFixtures: config.http.enableE2EFixtures,
   });
   eventIngestor.start();
 
@@ -102,6 +104,7 @@ function loadApiIndexerConfig(): ApiIndexerConfig {
     },
     http: {
       port: readHttpPortFromEnv(),
+      enableE2EFixtures: process.env.E2E_FIXTURE_API === "1",
     },
   };
 }
