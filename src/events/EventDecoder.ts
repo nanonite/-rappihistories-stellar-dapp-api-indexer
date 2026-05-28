@@ -116,11 +116,11 @@ function decodeFields(
           grantee: topics[2] ?? null,
           grantId: fieldAt(values, 0),
           recordId: fieldAt(values, 1),
-          grantType: "normal",
           expiresAt: numberAt(values, 2),
           revealAt: numberAt(values, 3) ?? 0,
           purpose: fieldAt(values, 4),
           scopeCategory: fieldAt(values, 5),
+          grantType: grantTypeName(numberAt(values, 6)),
         };
       }
 
@@ -311,6 +311,18 @@ function tierName(tierCode: number | null): string | null {
       return "full_clinical_history";
     default:
       return tierCode === null ? null : String(tierCode);
+  }
+}
+
+function grantTypeName(grantTypeCode: number | null): string {
+  switch (grantTypeCode) {
+    case 2:
+      return "break_glass";
+    case 3:
+      return "offline_emergency";
+    case 1:
+    default:
+      return "normal";
   }
 }
 
