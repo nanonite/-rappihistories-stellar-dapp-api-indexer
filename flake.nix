@@ -44,10 +44,11 @@
 
           DATABASE_URL = "postgres://medichain:medichain@localhost:5432/medichain";
           STELLAR_RPC_URL = "http://localhost:8000/soroban/rpc";
+          API_INDEXER_PORT = "8788";
 
           shellHook = ''
             echo "Medichain API indexer: Node $(node --version), Bun $(bun --version), TypeScript $(tsc --version | cut -d' ' -f2), Postgres $(postgres --version | cut -d' ' -f3)"
-            echo "MVP env: DATABASE_URL=$DATABASE_URL STELLAR_RPC_URL=$STELLAR_RPC_URL"
+            echo "MVP env: DATABASE_URL=$DATABASE_URL STELLAR_RPC_URL=$STELLAR_RPC_URL API_INDEXER_PORT=$API_INDEXER_PORT"
           '';
         };
     in

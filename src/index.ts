@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 
 import { EventIngestor, JsonRpcStellarEventClient } from "./events/EventIngestor.js";
 import { EventStore } from "./events/EventStore.js";
+import { startApiServer } from "./http/ApiServer.js";
 import { runPostgresMigrations } from "./storage/migrations.js";
 import { closePostgresPool, createPostgresPool } from "./storage/postgres.js";
 
@@ -17,6 +18,9 @@ export interface ApiIndexerConfig {
     contractIds: readonly string[];
     pollIntervalMs: number;
     rpcUrl: string;
+  };
+  http: {
+    port: number;
   };
 }
 
@@ -44,11 +48,15 @@ export async function startApiIndexer(
       pollIntervalMs: config.eventIngestor.pollIntervalMs,
     },
   );
+  const apiServer = startApiServer(pool, {
+    port: config.http.port,
+  });
   eventIngestor.start();
 
   return {
     async stop(): Promise<void> {
       eventIngestor.stop();
+      await apiServer.close();
       await closePostgresPool(pool);
     },
   };
@@ -72,6 +80,9 @@ function loadApiIndexerConfig(): ApiIndexerConfig {
       contractIds: readContractIdsFromEnv(),
       pollIntervalMs: readPollIntervalFromEnv(),
       rpcUrl,
+    },
+    http: {
+      port: readHttpPortFromEnv(),
     },
   };
 }
@@ -116,6 +127,22 @@ function readPollIntervalFromEnv(): number {
 
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error("EVENT_POLL_INTERVAL_MS must be a positive integer");
+  }
+
+  return parsed;
+}
+
+function readHttpPortFromEnv(): number {
+  const rawValue = process.env.API_INDEXER_PORT;
+
+  if (!rawValue) {
+    return 8788;
+  }
+
+  const parsed = Number(rawValue);
+
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65_535) {
+    throw new Error("API_INDEXER_PORT must be an integer between 1 and 65535");
   }
 
   return parsed;

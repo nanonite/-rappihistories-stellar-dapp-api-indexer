@@ -26,6 +26,8 @@ ENV DATABASE_URL=""
 ENV STELLAR_RPC_URL=""
 ENV INDEXER_CONTRACT_IDS=""
 ENV EVENT_POLL_INTERVAL_MS=5000
+ENV API_INDEXER_PORT=8788
 COPY --from=builder /app/components/api-indexer/dist components/api-indexer/dist
 COPY --from=builder /app/components/api-indexer/src/storage/migrations components/api-indexer/dist/storage/migrations
+EXPOSE 8788
 CMD ["node", "components/api-indexer/dist/index.js"]
