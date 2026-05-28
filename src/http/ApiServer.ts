@@ -130,6 +130,8 @@ async function handleRequest(
   switch (url.pathname) {
     case "/v1/health":
       return { status: 200, body: { ok: true } };
+    case "/v1/indexer/state":
+      return readIndexerState(pool);
     case "/v1/grants":
       return readGrants(pool, url);
     case "/v1/audit":
@@ -144,6 +146,23 @@ async function handleRequest(
         body: { error: "not_found" },
       };
   }
+}
+
+async function readIndexerState(pool: pg.Pool): Promise<JsonResponse> {
+  const result = await pool.query<{ value: string; updated_at: Date }>(
+    `SELECT value, updated_at
+    FROM _indexer_state
+    WHERE key = 'last_ledger'`,
+  );
+  const row = result.rows[0];
+
+  return {
+    status: 200,
+    body: {
+      lastLedger: row?.value ?? "0",
+      updatedAt: row?.updated_at.toISOString() ?? null,
+    },
+  };
 }
 
 async function readGrantById(
