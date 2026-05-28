@@ -23,4 +23,5 @@ FROM ${NODE_IMAGE} AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder /app/components/api-indexer/dist components/api-indexer/dist
+COPY --from=builder /app/components/api-indexer/src/storage/migrations components/api-indexer/dist/storage/migrations
 CMD ["node", "components/api-indexer/dist/index.js"]
