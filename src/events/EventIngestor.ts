@@ -54,7 +54,10 @@ export class JsonRpcStellarEventClient implements StellarEventRpcClient {
         jsonrpc: "2.0",
         id: "api-indexer-get-events",
         method: "getEvents",
-        params: request,
+        params: {
+          ...request,
+          xdrFormat: "json",
+        },
       }),
     });
 
@@ -170,19 +173,23 @@ export class EventIngestor {
         ],
       });
     } catch (error) {
-      const minimumLedger = readMinimumLedgerFromRangeError(error);
+      const ledgerRange = readLedgerRangeFromRangeError(error);
 
-      if (minimumLedger === null || startLedger >= minimumLedger) {
+      if (
+        ledgerRange === null ||
+        (startLedger >= ledgerRange.minimumLedger &&
+          startLedger <= ledgerRange.maximumLedger)
+      ) {
         throw error;
       }
 
-      await this.#store.ingestBatch([], minimumLedger - 1);
+      await this.#store.ingestBatch([], ledgerRange.minimumLedger - 1);
       console.warn(
-        `Adjusted indexer start ledger from ${startLedger} to local RPC minimum ${minimumLedger}`,
+        `Adjusted indexer start ledger from ${startLedger} to local RPC range ${ledgerRange.minimumLedger}-${ledgerRange.maximumLedger}`,
       );
 
       return this.#client.getEvents({
-        startLedger: minimumLedger,
+        startLedger: ledgerRange.minimumLedger,
         filters: [
           {
             type: "contract",
@@ -226,20 +233,34 @@ function hasJsonRpcError(payload: unknown): payload is JsonRpcFailure {
   return isRecord(payload) && payload.error !== undefined;
 }
 
-function readMinimumLedgerFromRangeError(error: unknown): number | null {
+interface LedgerRange {
+  minimumLedger: number;
+  maximumLedger: number;
+}
+
+function readLedgerRangeFromRangeError(error: unknown): LedgerRange | null {
   if (!(error instanceof Error)) {
     return null;
   }
 
-  const match = /ledger range:\s*(\d+)\s*-/i.exec(error.message);
+  const match = /ledger range:\s*(\d+)\s*-\s*(\d+)/i.exec(error.message);
   if (!match) {
     return null;
   }
 
   const minimumLedger = Number(match[1]);
-  return Number.isInteger(minimumLedger) && minimumLedger > 0
-    ? minimumLedger
-    : null;
+  const maximumLedger = Number(match[2]);
+
+  if (
+    !Number.isInteger(minimumLedger) ||
+    !Number.isInteger(maximumLedger) ||
+    minimumLedger <= 0 ||
+    maximumLedger < minimumLedger
+  ) {
+    return null;
+  }
+
+  return { minimumLedger, maximumLedger };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

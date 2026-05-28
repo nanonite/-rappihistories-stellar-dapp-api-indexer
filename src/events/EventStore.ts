@@ -124,15 +124,19 @@ export class EventStore {
         patient_pseudonym,
         tier,
         record_type,
+        commitment,
+        storage_ref,
         raw_event,
         ledger_sequence,
         event_timestamp
       )
-      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
       ON CONFLICT (record_id) DO UPDATE SET
         patient_pseudonym = EXCLUDED.patient_pseudonym,
         tier = EXCLUDED.tier,
         record_type = EXCLUDED.record_type,
+        commitment = EXCLUDED.commitment,
+        storage_ref = EXCLUDED.storage_ref,
         raw_event = EXCLUDED.raw_event,
         ledger_sequence = EXCLUDED.ledger_sequence,
         event_timestamp = EXCLUDED.event_timestamp,
@@ -142,6 +146,8 @@ export class EventStore {
         readStringField(event, "patientPseudonym") ?? "unknown",
         readStringField(event, "tier") ?? "unknown",
         readStringField(event, "recordType"),
+        readStringField(event, "commitment"),
+        readStringField(event, "storageRef"),
         JSON.stringify(event.rawEvent),
         event.ledgerSequence,
         event.eventTimestamp,

@@ -15,8 +15,8 @@ RUN npm install --global pnpm@9.15.9 --registry "${NPM_CONFIG_REGISTRY}"
 FROM base AS builder
 COPY components/api-indexer/package.json components/api-indexer/package.json
 COPY components/api-indexer/tsconfig.json components/api-indexer/tsconfig.json
-COPY components/api-indexer/src components/api-indexer/src
 RUN cd components/api-indexer && pnpm install --prod=false --registry "${NPM_CONFIG_REGISTRY}"
+COPY components/api-indexer/src components/api-indexer/src
 RUN cd components/api-indexer && pnpm build
 
 FROM ${NODE_IMAGE} AS runner

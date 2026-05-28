@@ -19,7 +19,9 @@ export interface StellarRpcEvent {
   ledgerClosedAt?: string;
   topic?: unknown[];
   topics?: unknown[];
+  topicJson?: unknown[];
   value?: unknown;
+  valueJson?: unknown;
   inSuccessfulContractCall?: boolean;
 }
 
@@ -60,7 +62,7 @@ export function decodeIndexerEvent(
   event: StellarRpcEvent,
 ): DecodedIndexerEvent | null {
   const rawEvent = toJsonObject(event);
-  const topics = event.topic ?? event.topics ?? [];
+  const topics = event.topicJson ?? event.topic ?? event.topics ?? [];
   const topicTexts = topics.map((topic) => readText(topic));
   const sourceEventType = topicTexts.find((topic) => topic !== null);
 
@@ -80,7 +82,7 @@ export function decodeIndexerEvent(
     return null;
   }
 
-  const valueItems = readTuple(event.value);
+  const valueItems = readTuple(event.valueJson ?? event.value);
   const fields = decodeFields(eventType, sourceEventType, topicTexts, valueItems);
 
   return {
@@ -116,7 +118,9 @@ function decodeFields(
           recordId: fieldAt(values, 1),
           grantType: "normal",
           expiresAt: numberAt(values, 2),
-          revealAt: 0,
+          revealAt: numberAt(values, 3) ?? 0,
+          purpose: fieldAt(values, 4),
+          scopeCategory: fieldAt(values, 5),
         };
       }
 
@@ -179,8 +183,10 @@ function decodeFields(
       return {
         patientPseudonym: topics[1] ?? null,
         recordId: fieldAt(values, 0),
-        tier: numberAt(values, 1),
-        recordType: numberAt(values, 2),
+        tier: tierName(numberAt(values, 1)),
+        recordType: fieldAt(values, 2),
+        storageRef: bytesText(values[3]),
+        commitment: bytesText(values[4]),
       };
   }
 }
@@ -245,6 +251,7 @@ function readText(value: unknown): string | null {
 
   for (const key of [
     "sym",
+    "symbol",
     "str",
     "address",
     "contractId",
@@ -271,6 +278,40 @@ function readText(value: unknown): string | null {
   }
 
   return null;
+}
+
+function bytesText(value: unknown): string | null {
+  const text = readText(value);
+
+  if (!text) {
+    return null;
+  }
+
+  if (/^[0-9a-f]+$/i.test(text) && text.length % 2 === 0) {
+    const bytes = Uint8Array.from(
+      text.match(/.{2}/g)?.map((byte) => Number.parseInt(byte, 16)) ?? [],
+    );
+    const decoded = new TextDecoder().decode(bytes);
+
+    if (/^[\x20-\x7e]+$/.test(decoded)) {
+      return decoded;
+    }
+  }
+
+  return text;
+}
+
+function tierName(tierCode: number | null): string | null {
+  switch (tierCode) {
+    case 1:
+      return "offline_emergency_card";
+    case 2:
+      return "online_emergency_bundle";
+    case 3:
+      return "full_clinical_history";
+    default:
+      return tierCode === null ? null : String(tierCode);
+  }
 }
 
 function readNumber(value: unknown): number | null {
