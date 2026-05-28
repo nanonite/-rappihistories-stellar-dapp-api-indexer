@@ -87,6 +87,37 @@ interface WriteGrantRow {
   indexed_at: Date;
 }
 
+interface PrescriptionRow {
+  prescription_id: string;
+  record_id: string | null;
+  patient_pseudonym: string;
+  prescriber_ref: string | null;
+  pharmacy_ref: string | null;
+  unit_id: string | null;
+  reservation_ref: string | null;
+  receipt_record_id: string | null;
+  commitment: string | null;
+  status: string;
+  ledger_sequence: string;
+  issued_at: Date | null;
+  updated_at: Date;
+  indexed_at: Date;
+}
+
+interface InventoryUnitRow {
+  inventory_unit_id: string;
+  prescription_id: string | null;
+  batch_id: string | null;
+  reservation_ref: string | null;
+  lot_id: string | null;
+  sku: string | null;
+  pharmacy_ref: string | null;
+  status: string;
+  ledger_sequence: string;
+  updated_at: Date;
+  indexed_at: Date;
+}
+
 interface GrantDetailsRow extends GrantRow {
   patient_pseudonym: string;
   tier: string;
@@ -147,6 +178,14 @@ async function handleRequest(
   if (writeGrantId) {
     return readWriteGrantById(pool, writeGrantId);
   }
+  const prescriptionId = readPathParam(url.pathname, "/v1/prescriptions/");
+  if (prescriptionId) {
+    return readPrescriptionById(pool, prescriptionId);
+  }
+  const inventoryUnitId = readPathParam(url.pathname, "/v1/inventory-units/");
+  if (inventoryUnitId) {
+    return readInventoryUnitById(pool, inventoryUnitId);
+  }
   const historySubject = readPatientPathParam(url.pathname, "history");
   if (historySubject) {
     return readPatientHistory(pool, historySubject);
@@ -169,6 +208,10 @@ async function handleRequest(
       return readNotifications(pool, url);
     case "/v1/records":
       return readRecords(pool, url);
+    case "/v1/prescriptions":
+      return readPrescriptions(pool, url);
+    case "/v1/inventory-units":
+      return readInventoryUnits(pool, url);
     default:
       return {
         status: 404,
@@ -521,6 +564,159 @@ async function readWriteGrantById(
     status: 200,
     body: {
       writeGrant: writeGrantFromRow(row),
+    },
+  };
+}
+
+async function readPrescriptionById(
+  pool: pg.Pool,
+  prescriptionId: string,
+): Promise<JsonResponse> {
+  const result = await pool.query<PrescriptionRow>(
+    `SELECT
+      prescription_id,
+      record_id,
+      patient_pseudonym,
+      prescriber_ref,
+      pharmacy_ref,
+      unit_id,
+      reservation_ref,
+      receipt_record_id,
+      commitment,
+      status,
+      ledger_sequence::text,
+      issued_at,
+      updated_at,
+      indexed_at
+    FROM prescriptions
+    WHERE prescription_id = $1`,
+    [prescriptionId],
+  );
+  const row = result.rows[0];
+
+  if (!row) {
+    return {
+      status: 404,
+      body: { error: "not_found" },
+    };
+  }
+
+  return {
+    status: 200,
+    body: {
+      prescription: prescriptionFromRow(row),
+    },
+  };
+}
+
+async function readPrescriptions(pool: pg.Pool, url: URL): Promise<JsonResponse> {
+  const patient = readPatientQuery(url);
+
+  if (!patient) {
+    return missingPatientResponse();
+  }
+
+  const result = await pool.query<PrescriptionRow>(
+    `SELECT
+      prescription_id,
+      record_id,
+      patient_pseudonym,
+      prescriber_ref,
+      pharmacy_ref,
+      unit_id,
+      reservation_ref,
+      receipt_record_id,
+      commitment,
+      status,
+      ledger_sequence::text,
+      issued_at,
+      updated_at,
+      indexed_at
+    FROM prescriptions
+    WHERE patient_pseudonym = $1
+    ORDER BY updated_at DESC, prescription_id ASC`,
+    [patient],
+  );
+
+  return {
+    status: 200,
+    body: {
+      prescriptions: result.rows.map(prescriptionFromRow),
+    },
+  };
+}
+
+async function readInventoryUnitById(
+  pool: pg.Pool,
+  unitId: string,
+): Promise<JsonResponse> {
+  const result = await pool.query<InventoryUnitRow>(
+    `SELECT
+      inventory_unit_id,
+      prescription_id,
+      batch_id,
+      reservation_ref,
+      lot_id,
+      sku,
+      pharmacy_ref,
+      status,
+      ledger_sequence::text,
+      updated_at,
+      indexed_at
+    FROM inventory_units
+    WHERE inventory_unit_id = $1`,
+    [unitId],
+  );
+  const row = result.rows[0];
+
+  if (!row) {
+    return {
+      status: 404,
+      body: { error: "not_found" },
+    };
+  }
+
+  return {
+    status: 200,
+    body: {
+      inventoryUnit: inventoryUnitFromRow(row),
+    },
+  };
+}
+
+async function readInventoryUnits(pool: pg.Pool, url: URL): Promise<JsonResponse> {
+  const prescription = url.searchParams.get("prescription");
+
+  if (!prescription) {
+    return {
+      status: 400,
+      body: { error: "missing_prescription" },
+    };
+  }
+
+  const result = await pool.query<InventoryUnitRow>(
+    `SELECT
+      inventory_unit_id,
+      prescription_id,
+      batch_id,
+      reservation_ref,
+      lot_id,
+      sku,
+      pharmacy_ref,
+      status,
+      ledger_sequence::text,
+      updated_at,
+      indexed_at
+    FROM inventory_units
+    WHERE prescription_id = $1
+    ORDER BY updated_at DESC, inventory_unit_id ASC`,
+    [prescription],
+  );
+
+  return {
+    status: 200,
+    body: {
+      inventoryUnits: result.rows.map(inventoryUnitFromRow),
     },
   };
 }
@@ -1006,6 +1202,41 @@ function writeGrantFromRow(row: WriteGrantRow): unknown {
     createdAt: row.created_at,
     ledgerSequence: row.ledger_sequence,
     eventTimestamp: row.event_timestamp?.toISOString() ?? null,
+    indexedAt: row.indexed_at.toISOString(),
+  };
+}
+
+function prescriptionFromRow(row: PrescriptionRow): unknown {
+  return {
+    prescriptionId: row.prescription_id,
+    recordId: row.record_id,
+    patientPseudonym: row.patient_pseudonym,
+    prescriberRef: row.prescriber_ref,
+    pharmacyRef: row.pharmacy_ref,
+    unitId: row.unit_id,
+    reservationRef: row.reservation_ref,
+    receiptRecordId: row.receipt_record_id,
+    commitment: row.commitment,
+    status: row.status,
+    ledgerSequence: row.ledger_sequence,
+    issuedAt: row.issued_at?.toISOString() ?? null,
+    updatedAt: row.updated_at.toISOString(),
+    indexedAt: row.indexed_at.toISOString(),
+  };
+}
+
+function inventoryUnitFromRow(row: InventoryUnitRow): unknown {
+  return {
+    inventoryUnitId: row.inventory_unit_id,
+    prescriptionId: row.prescription_id,
+    batchId: row.batch_id,
+    reservationRef: row.reservation_ref,
+    lotId: row.lot_id,
+    sku: row.sku,
+    pharmacyRef: row.pharmacy_ref,
+    status: row.status,
+    ledgerSequence: row.ledger_sequence,
+    updatedAt: row.updated_at.toISOString(),
     indexedAt: row.indexed_at.toISOString(),
   };
 }

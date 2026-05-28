@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS prescriptions (
   patient_pseudonym VARCHAR(56) NOT NULL,
   prescriber_ref    VARCHAR(56),
   pharmacy_ref      VARCHAR(56),
+  unit_id           CHAR(64),
+  reservation_ref   CHAR(64),
+  receipt_record_id CHAR(64),
+  commitment        CHAR(64),
   status            VARCHAR(32) NOT NULL,
   raw_event         JSONB NOT NULL DEFAULT '{}'::jsonb,
   ledger_sequence   BIGINT NOT NULL,
@@ -86,9 +90,16 @@ CREATE TABLE IF NOT EXISTS prescriptions (
   indexed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE prescriptions ADD COLUMN IF NOT EXISTS unit_id CHAR(64);
+ALTER TABLE prescriptions ADD COLUMN IF NOT EXISTS reservation_ref CHAR(64);
+ALTER TABLE prescriptions ADD COLUMN IF NOT EXISTS receipt_record_id CHAR(64);
+ALTER TABLE prescriptions ADD COLUMN IF NOT EXISTS commitment CHAR(64);
+
 CREATE TABLE IF NOT EXISTS inventory_units (
   inventory_unit_id CHAR(64) PRIMARY KEY,
   prescription_id   CHAR(64) REFERENCES prescriptions(prescription_id) ON DELETE SET NULL,
+  batch_id          CHAR(64),
+  reservation_ref   CHAR(64),
   lot_id            VARCHAR(128),
   sku               VARCHAR(128),
   pharmacy_ref      VARCHAR(56),
@@ -98,6 +109,9 @@ CREATE TABLE IF NOT EXISTS inventory_units (
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   indexed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE inventory_units ADD COLUMN IF NOT EXISTS batch_id CHAR(64);
+ALTER TABLE inventory_units ADD COLUMN IF NOT EXISTS reservation_ref CHAR(64);
 
 CREATE TABLE IF NOT EXISTS credentials (
   credential_id     CHAR(64) PRIMARY KEY,
@@ -146,5 +160,6 @@ CREATE INDEX IF NOT EXISTS idx_write_grants_grantee ON write_grants(grantee);
 CREATE INDEX IF NOT EXISTS idx_audit_events_grant_id ON audit_events(grant_id);
 CREATE INDEX IF NOT EXISTS idx_prescriptions_patient_pseudonym ON prescriptions(patient_pseudonym);
 CREATE INDEX IF NOT EXISTS idx_inventory_units_prescription_id ON inventory_units(prescription_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_units_batch_id ON inventory_units(batch_id);
 CREATE INDEX IF NOT EXISTS idx_credentials_holder_ref ON credentials(holder_ref);
 CREATE INDEX IF NOT EXISTS idx_notifications_patient_pseudonym ON notifications(patient_pseudonym);

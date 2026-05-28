@@ -10,6 +10,13 @@ export const handledIndexerEventTypes = [
   "rec_app",
   "write_gr",
   "wrgr_rv",
+  "rx_issue",
+  "rx_res",
+  "rx_disp",
+  "unit_reg",
+  "unit_res",
+  "unit_dis",
+  "batch_q",
 ] as const;
 
 export type IndexerEventType = (typeof handledIndexerEventTypes)[number];
@@ -56,6 +63,13 @@ const eventShapes: readonly EventShape[] = [
   { eventType: "rec_app", aliases: ["rec_app"] },
   { eventType: "write_gr", aliases: ["write_gr"] },
   { eventType: "wrgr_rv", aliases: ["wrgr_rv"] },
+  { eventType: "rx_issue", aliases: ["rx_issue"] },
+  { eventType: "rx_res", aliases: ["rx_res"] },
+  { eventType: "rx_disp", aliases: ["rx_disp"] },
+  { eventType: "unit_reg", aliases: ["unit_reg"] },
+  { eventType: "unit_res", aliases: ["unit_res"] },
+  { eventType: "unit_dis", aliases: ["unit_dis"] },
+  { eventType: "batch_q", aliases: ["batch_q"] },
 ];
 
 const eventTypeByAlias = new Map<string, IndexerEventType>(
@@ -229,6 +243,65 @@ function decodeFields(
         subject: topics[1] ?? null,
         patientPseudonym: topics[1] ?? null,
         grantId: fieldAt(values, 0) ?? readText(eventSingleton(values)),
+      };
+
+    case "rx_issue":
+      return {
+        patientPseudonym: topics[1] ?? null,
+        patientRef: topics[1] ?? null,
+        prescriberRef: topics[2] ?? null,
+        prescriptionId: fieldAt(values, 0) ?? readText(eventSingleton(values)),
+        diagnosisRecordId: fieldAt(values, 1),
+        commitment: fieldAt(values, 2),
+        status: "issued",
+      };
+
+    case "rx_res":
+      return {
+        prescriptionId: topics[1] ?? null,
+        pharmacyRef: topics[2] ?? null,
+        patientPseudonym: fieldAt(values, 0),
+        patientRef: fieldAt(values, 0),
+        unitId: fieldAt(values, 1),
+        reservationRef: fieldAt(values, 2),
+        status: "reserved",
+      };
+
+    case "rx_disp":
+      return {
+        prescriptionId: topics[1] ?? null,
+        pharmacyRef: topics[2] ?? null,
+        patientPseudonym: fieldAt(values, 0),
+        patientRef: fieldAt(values, 0),
+        unitId: fieldAt(values, 1),
+        receiptRecordId: fieldAt(values, 2) ?? readText(eventSingleton(values)),
+        status: "dispensed",
+      };
+
+    case "unit_reg":
+      return {
+        unitId: topics[1] ?? null,
+        batchId: fieldAt(values, 0) ?? readText(eventSingleton(values)),
+        status: "available",
+      };
+
+    case "unit_res":
+      return {
+        unitId: topics[1] ?? null,
+        reservationRef: fieldAt(values, 0) ?? readText(eventSingleton(values)),
+        status: "reserved",
+      };
+
+    case "unit_dis":
+      return {
+        unitId: topics[1] ?? fieldAt(values, 0) ?? readText(eventSingleton(values)),
+        status: "dispensed",
+      };
+
+    case "batch_q":
+      return {
+        batchId: topics[1] ?? fieldAt(values, 0) ?? readText(eventSingleton(values)),
+        status: "quarantined",
       };
   }
 }

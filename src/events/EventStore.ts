@@ -102,6 +102,27 @@ export class EventStore {
       case "wrgr_rv":
         await this.revokeWriteGrant(client, event);
         return;
+      case "rx_issue":
+        await this.upsertPrescriptionIssued(client, event);
+        return;
+      case "rx_res":
+        await this.upsertPrescriptionReserved(client, event);
+        return;
+      case "rx_disp":
+        await this.upsertPrescriptionDispensed(client, event);
+        return;
+      case "unit_reg":
+        await this.upsertInventoryUnitRegistered(client, event);
+        return;
+      case "unit_res":
+        await this.upsertInventoryUnitReserved(client, event);
+        return;
+      case "unit_dis":
+        await this.upsertInventoryUnitDispensed(client, event);
+        return;
+      case "batch_q":
+        await this.markBatchQuarantined(client, event);
+        return;
     }
   }
 
@@ -144,7 +165,7 @@ export class EventStore {
         ledger_sequence,
         event_timestamp
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
       ON CONFLICT (record_id) DO UPDATE SET
         patient_pseudonym = EXCLUDED.patient_pseudonym,
         subject = EXCLUDED.subject,
@@ -505,6 +526,432 @@ export class EventStore {
         readStringField(event, "issuerRef"),
         JSON.stringify(event.rawEvent),
         event.ledgerSequence,
+      ],
+    );
+  }
+
+  private async upsertPrescriptionIssued(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+  ): Promise<void> {
+    const prescriptionId = readStringField(event, "prescriptionId");
+    const patient = readStringField(event, "patientPseudonym");
+
+    if (!prescriptionId || !patient) {
+      await this.insertAuditEvent(client, event);
+      return;
+    }
+
+    const diagnosisRecordId = readStringField(event, "diagnosisRecordId");
+    if (diagnosisRecordId) {
+      await this.ensurePrescriptionSourceRecord(
+        client,
+        event,
+        diagnosisRecordId,
+        patient,
+        readStringField(event, "prescriberRef") ?? patient,
+      );
+    }
+
+    await client.query(
+      `INSERT INTO prescriptions (
+        prescription_id,
+        record_id,
+        patient_pseudonym,
+        prescriber_ref,
+        status,
+        commitment,
+        raw_event,
+        ledger_sequence,
+        issued_at,
+        updated_at
+      )
+      VALUES ($1, (SELECT record_id FROM records WHERE record_id = $2), $3, $4, 'issued', $5, $6::jsonb, $7, $8, $8)
+      ON CONFLICT (prescription_id) DO UPDATE SET
+        record_id = COALESCE(EXCLUDED.record_id, prescriptions.record_id),
+        patient_pseudonym = EXCLUDED.patient_pseudonym,
+        prescriber_ref = COALESCE(EXCLUDED.prescriber_ref, prescriptions.prescriber_ref),
+        status = CASE
+          WHEN prescriptions.status IN ('reserved', 'dispensed') THEN prescriptions.status
+          ELSE EXCLUDED.status
+        END,
+        commitment = COALESCE(EXCLUDED.commitment, prescriptions.commitment),
+        raw_event = EXCLUDED.raw_event,
+        ledger_sequence = EXCLUDED.ledger_sequence,
+        issued_at = COALESCE(prescriptions.issued_at, EXCLUDED.issued_at),
+        updated_at = EXCLUDED.updated_at,
+        indexed_at = NOW()`,
+      [
+        prescriptionId,
+        diagnosisRecordId,
+        patient,
+        readStringField(event, "prescriberRef"),
+        readStringField(event, "commitment"),
+        JSON.stringify(event.rawEvent),
+        event.ledgerSequence,
+        event.eventTimestamp,
+      ],
+    );
+  }
+
+  private async upsertPrescriptionReserved(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+  ): Promise<void> {
+    const prescriptionId = readStringField(event, "prescriptionId");
+    const unitId = readStringField(event, "unitId");
+
+    if (!prescriptionId) {
+      await this.insertAuditEvent(client, event);
+      return;
+    }
+
+    const patient = readStringField(event, "patientPseudonym") ?? "unknown";
+    const pharmacy = readStringField(event, "pharmacyRef");
+    const reservationRef = readStringField(event, "reservationRef");
+
+    await client.query(
+      `INSERT INTO prescriptions (
+        prescription_id,
+        patient_pseudonym,
+        pharmacy_ref,
+        unit_id,
+        reservation_ref,
+        status,
+        raw_event,
+        ledger_sequence,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, 'reserved', $6::jsonb, $7, $8)
+      ON CONFLICT (prescription_id) DO UPDATE SET
+        patient_pseudonym = CASE
+          WHEN EXCLUDED.patient_pseudonym = 'unknown' THEN prescriptions.patient_pseudonym
+          ELSE EXCLUDED.patient_pseudonym
+        END,
+        pharmacy_ref = COALESCE(EXCLUDED.pharmacy_ref, prescriptions.pharmacy_ref),
+        unit_id = COALESCE(EXCLUDED.unit_id, prescriptions.unit_id),
+        reservation_ref = COALESCE(EXCLUDED.reservation_ref, prescriptions.reservation_ref),
+        status = CASE
+          WHEN prescriptions.status = 'dispensed' THEN prescriptions.status
+          ELSE EXCLUDED.status
+        END,
+        raw_event = EXCLUDED.raw_event,
+        ledger_sequence = EXCLUDED.ledger_sequence,
+        updated_at = EXCLUDED.updated_at,
+        indexed_at = NOW()`,
+      [
+        prescriptionId,
+        patient,
+        pharmacy,
+        unitId,
+        reservationRef,
+        JSON.stringify(event.rawEvent),
+        event.ledgerSequence,
+        event.eventTimestamp,
+      ],
+    );
+
+    if (unitId) {
+      await this.linkInventoryUnitToPrescription(
+        client,
+        event,
+        unitId,
+        prescriptionId,
+        pharmacy,
+        reservationRef,
+        "reserved",
+      );
+    }
+  }
+
+  private async upsertPrescriptionDispensed(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+  ): Promise<void> {
+    const prescriptionId = readStringField(event, "prescriptionId");
+    const unitId = readStringField(event, "unitId");
+
+    if (!prescriptionId) {
+      await this.insertAuditEvent(client, event);
+      return;
+    }
+
+    const patient = readStringField(event, "patientPseudonym") ?? "unknown";
+    const pharmacy = readStringField(event, "pharmacyRef");
+    const receiptRecordId = readStringField(event, "receiptRecordId");
+
+    await client.query(
+      `INSERT INTO prescriptions (
+        prescription_id,
+        patient_pseudonym,
+        pharmacy_ref,
+        unit_id,
+        receipt_record_id,
+        status,
+        raw_event,
+        ledger_sequence,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, 'dispensed', $6::jsonb, $7, $8)
+      ON CONFLICT (prescription_id) DO UPDATE SET
+        patient_pseudonym = CASE
+          WHEN EXCLUDED.patient_pseudonym = 'unknown' THEN prescriptions.patient_pseudonym
+          ELSE EXCLUDED.patient_pseudonym
+        END,
+        pharmacy_ref = COALESCE(EXCLUDED.pharmacy_ref, prescriptions.pharmacy_ref),
+        unit_id = COALESCE(EXCLUDED.unit_id, prescriptions.unit_id),
+        receipt_record_id = COALESCE(EXCLUDED.receipt_record_id, prescriptions.receipt_record_id),
+        status = EXCLUDED.status,
+        raw_event = EXCLUDED.raw_event,
+        ledger_sequence = EXCLUDED.ledger_sequence,
+        updated_at = EXCLUDED.updated_at,
+        indexed_at = NOW()`,
+      [
+        prescriptionId,
+        patient,
+        pharmacy,
+        unitId,
+        receiptRecordId,
+        JSON.stringify(event.rawEvent),
+        event.ledgerSequence,
+        event.eventTimestamp,
+      ],
+    );
+
+    if (unitId) {
+      await this.linkInventoryUnitToPrescription(
+        client,
+        event,
+        unitId,
+        prescriptionId,
+        pharmacy,
+        readStringField(event, "reservationRef"),
+        "dispensed",
+      );
+    }
+  }
+
+  private async upsertInventoryUnitRegistered(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+  ): Promise<void> {
+    const unitId = readStringField(event, "unitId");
+
+    if (!unitId) {
+      await this.insertAuditEvent(client, event);
+      return;
+    }
+
+    const batchId = readStringField(event, "batchId");
+    await client.query(
+      `INSERT INTO inventory_units (
+        inventory_unit_id,
+        batch_id,
+        lot_id,
+        status,
+        raw_event,
+        ledger_sequence,
+        updated_at
+      )
+      VALUES ($1, $2, $3, 'available', $4::jsonb, $5, $6)
+      ON CONFLICT (inventory_unit_id) DO UPDATE SET
+        batch_id = COALESCE(EXCLUDED.batch_id, inventory_units.batch_id),
+        lot_id = COALESCE(EXCLUDED.lot_id, inventory_units.lot_id),
+        status = CASE
+          WHEN inventory_units.status IN ('reserved', 'dispensed') THEN inventory_units.status
+          ELSE EXCLUDED.status
+        END,
+        raw_event = EXCLUDED.raw_event,
+        ledger_sequence = EXCLUDED.ledger_sequence,
+        updated_at = EXCLUDED.updated_at,
+        indexed_at = NOW()`,
+      [
+        unitId,
+        batchId,
+        batchId,
+        JSON.stringify(event.rawEvent),
+        event.ledgerSequence,
+        event.eventTimestamp,
+      ],
+    );
+  }
+
+  private async upsertInventoryUnitReserved(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+  ): Promise<void> {
+    const unitId = readStringField(event, "unitId");
+
+    if (!unitId) {
+      await this.insertAuditEvent(client, event);
+      return;
+    }
+
+    await this.upsertInventoryStatus(
+      client,
+      event,
+      unitId,
+      "reserved",
+      readStringField(event, "reservationRef"),
+    );
+  }
+
+  private async upsertInventoryUnitDispensed(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+  ): Promise<void> {
+    const unitId = readStringField(event, "unitId");
+
+    if (!unitId) {
+      await this.insertAuditEvent(client, event);
+      return;
+    }
+
+    await this.upsertInventoryStatus(client, event, unitId, "dispensed", null);
+  }
+
+  private async markBatchQuarantined(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+  ): Promise<void> {
+    const batchId = readStringField(event, "batchId");
+
+    if (!batchId) {
+      await this.insertAuditEvent(client, event);
+      return;
+    }
+
+    await client.query(
+      `UPDATE inventory_units
+      SET status = 'quarantined',
+        raw_event = $2::jsonb,
+        ledger_sequence = $3,
+        updated_at = $4,
+        indexed_at = NOW()
+      WHERE batch_id = $1 AND status = 'available'`,
+      [
+        batchId,
+        JSON.stringify(event.rawEvent),
+        event.ledgerSequence,
+        event.eventTimestamp,
+      ],
+    );
+  }
+
+  private async upsertInventoryStatus(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+    unitId: string,
+    status: "reserved" | "dispensed",
+    reservationRef: string | null,
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO inventory_units (
+        inventory_unit_id,
+        reservation_ref,
+        status,
+        raw_event,
+        ledger_sequence,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+      ON CONFLICT (inventory_unit_id) DO UPDATE SET
+        reservation_ref = COALESCE(EXCLUDED.reservation_ref, inventory_units.reservation_ref),
+        status = CASE
+          WHEN inventory_units.status = 'dispensed' THEN inventory_units.status
+          ELSE EXCLUDED.status
+        END,
+        raw_event = EXCLUDED.raw_event,
+        ledger_sequence = EXCLUDED.ledger_sequence,
+        updated_at = EXCLUDED.updated_at,
+        indexed_at = NOW()`,
+      [
+        unitId,
+        reservationRef,
+        status,
+        JSON.stringify(event.rawEvent),
+        event.ledgerSequence,
+        event.eventTimestamp,
+      ],
+    );
+  }
+
+  private async linkInventoryUnitToPrescription(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+    unitId: string,
+    prescriptionId: string,
+    pharmacyRef: string | null,
+    reservationRef: string | null,
+    status: "reserved" | "dispensed",
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO inventory_units (
+        inventory_unit_id,
+        prescription_id,
+        pharmacy_ref,
+        reservation_ref,
+        status,
+        raw_event,
+        ledger_sequence,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+      ON CONFLICT (inventory_unit_id) DO UPDATE SET
+        prescription_id = EXCLUDED.prescription_id,
+        pharmacy_ref = COALESCE(EXCLUDED.pharmacy_ref, inventory_units.pharmacy_ref),
+        reservation_ref = COALESCE(EXCLUDED.reservation_ref, inventory_units.reservation_ref),
+        status = CASE
+          WHEN inventory_units.status = 'dispensed' THEN inventory_units.status
+          ELSE EXCLUDED.status
+        END,
+        raw_event = EXCLUDED.raw_event,
+        ledger_sequence = EXCLUDED.ledger_sequence,
+        updated_at = EXCLUDED.updated_at,
+        indexed_at = NOW()`,
+      [
+        unitId,
+        prescriptionId,
+        pharmacyRef,
+        reservationRef,
+        status,
+        JSON.stringify(event.rawEvent),
+        event.ledgerSequence,
+        event.eventTimestamp,
+      ],
+    );
+  }
+
+  private async ensurePrescriptionSourceRecord(
+    client: pg.PoolClient,
+    event: DecodedIndexerEvent,
+    recordId: string,
+    patient: string,
+    author: string,
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO records (
+        record_id,
+        patient_pseudonym,
+        subject,
+        author,
+        tier,
+        record_type,
+        commitment,
+        raw_event,
+        ledger_sequence,
+        event_timestamp
+      )
+      VALUES ($1, $2, $2, $3, 'full_clinical_history', 'prescription_source', $4, $5::jsonb, $6, $7)
+      ON CONFLICT (record_id) DO NOTHING`,
+      [
+        recordId,
+        patient,
+        author,
+        readStringField(event, "commitment"),
+        JSON.stringify(event.rawEvent),
+        event.ledgerSequence,
+        event.eventTimestamp,
       ],
     );
   }
