@@ -1,4 +1,5 @@
 node_modules/
+.exo/
 dist/
 *.tsbuildinfo
 .env.local
